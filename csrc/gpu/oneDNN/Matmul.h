@@ -198,7 +198,9 @@ static inline void matmul(
       bias_strides,
       dims,
       is_onednn_layout_suggested,
-      attr);
+      attr,
+      mat1.get_device(),
+      mat2.get_device());
 #endif
 
   // Only setting zp mask when zp is not zero
