@@ -162,10 +162,10 @@ class gemm_t<
   // note: plane format, row-major
   // note: 4bit x 2, row-major
   using matB_tile_desc_t = subgroup::tile_desc_t<
-      tile_size_x_b / pack_ratio,
-      tile_size_y_b,
-      block_size_x_b / pack_ratio,
-      block_size_y_b,
+      tile_size_x_b,
+      tile_size_y_b / pack_ratio,
+      block_size_x_b,
+      block_size_y_b / pack_ratio,
       reg_layout::tiled>;
   using matB_t = subgroup::tile_t<dtype_b, matB_tile_desc_t>;
   using matB_payload_t = subgroup::mem_payload_t<
@@ -532,6 +532,8 @@ class gemm_t<
       subgroup::elemwise_cvt(matA_acc, matA);
       dequantize(matB_acc, matB, scale, zero_pt);
       SW_BARRIER();
+    //   matB_acc.reg = 1;
+    //   matA_acc.reg = 1;
       tile_mma::mma(matAcc, matAcc, matB_acc, matA_acc);
       SW_BARRIER();
       if constexpr (enable_periodic_sync) {
@@ -569,7 +571,7 @@ class gemm_t<
         auto matB_blk = matB.reg
                             .xetla_select<matB_t::block_elems, 1>(
                                 block_id * matB_t::block_elems)
-                            .xetla_format<int8_t>();
+                            .xetla_format<uint8_t>();
         int scale_block_id = (i / block_b_y_per_scale * num_block_x + j);
         auto scale_vec = scale.reg.xetla_select<scale_t::block_size_x, 1>(
             scale_block_id * scale_t::block_size_x);
@@ -578,41 +580,44 @@ class gemm_t<
             block_id * matB_acc_t::block_elems);
 
         // 2: int8 includes 2 4bits data.
-        xetla_vector<int8_t, block_size_x_b * block_size_y_b> cvt_blk;
-        cvt_blk.xetla_select<matB_t::block_elems, 2>(0) = matB_blk & 0x0f;
-        cvt_blk.xetla_select<matB_t::block_elems, 2>(0) =
-            cvt_blk.xetla_select<matB_t::block_elems, 2>(0) << 4;
-        cvt_blk.xetla_select<matB_t::block_elems, 2>(0) =
-            cvt_blk.xetla_select<matB_t::block_elems, 2>(0) >> 4;
-        cvt_blk.xetla_select<matB_t::block_elems, 2>(1) = matB_blk >> 4;
+        xetla_vector<uint8_t, block_size_x_b * block_size_y_b> cvt_blk;
+        cvt_blk.xetla_select<matB_t::block_elems, 1>(0) = matB_blk & 0x0f;
+        cvt_blk.xetla_select<matB_t::block_elems, 1>(matB_t::block_elems) = matB_blk >> 4;
+        // cvt_blk.xetla_select<matB_t::block_elems, 2>(0) =
+        //     cvt_blk.xetla_select<matB_t::block_elems, 2>(0) << 4;
+        // cvt_blk.xetla_select<matB_t::block_elems, 2>(0) =
+        //     cvt_blk.xetla_select<matB_t::block_elems, 2>(0) >> 4;
+        // cvt_blk.xetla_select<matB_t::block_elems, 2>(1) = matB_blk >> 4;
 
         xetla_vector<int32_t, block_size_x_b * block_size_y_b> cvt_blk_i32;
-        if constexpr (compute_policy::quant_type == quant_mode::S4_ASYM) {
-          auto zero_pt_vec = zero_pt.reg
-                                 .xetla_select<zero_pt_t::block_size_x, 1>(
-                                     scale_block_id * zero_pt_t::block_size_x)
-                                 .xetla_format<uint8_t>();
-          xetla_vector<uint8_t, block_size_x_b> zero_pt_sub;
-          zero_pt_sub.xetla_select<block_size_x_b / 2, 2>(0) =
-              zero_pt_vec & 0x0f;
-          zero_pt_sub.xetla_select<block_size_x_b / 2, 2>(1) = zero_pt_vec >> 4;
-          xetla_vector<uint8_t, block_size_x_b * block_size_y_b> zero_pt_blk;
-#pragma unroll
-          for (int row = 0; row < block_size_y_b; row++) {
-            zero_pt_blk.xetla_select<block_size_x_b, 1>(row * block_size_x_b)
-                .xetla_format<int8_t>() =
-                zero_pt_sub.xetla_format<int8_t>() + int8_t(1);
-          }
-          cvt_blk_i32 =
-              (cvt_blk.xetla_format<int8_t>() -
-               zero_pt_blk.xetla_format<int8_t>());
-        }
+//         if constexpr (compute_policy::quant_type == quant_mode::S4_ASYM) {
+//           auto zero_pt_vec = zero_pt.reg
+//                                  .xetla_select<zero_pt_t::block_size_x, 1>(
+//                                      scale_block_id * zero_pt_t::block_size_x)
+//                                  .xetla_format<uint8_t>();
+//           xetla_vector<uint8_t, block_size_x_b> zero_pt_sub;
+//           zero_pt_sub.xetla_select<block_size_x_b / 2, 2>(0) =
+//               zero_pt_vec & 0x0f;
+//           zero_pt_sub.xetla_select<block_size_x_b / 2, 2>(1) = zero_pt_vec >> 4;
+//           xetla_vector<uint8_t, block_size_x_b * block_size_y_b> zero_pt_blk;
+// #pragma unroll
+//           for (int row = 0; row < block_size_y_b; row++) {
+//             zero_pt_blk.xetla_select<block_size_x_b, 1>(row * block_size_x_b)
+//                 .xetla_format<int8_t>() =
+//                 zero_pt_sub.xetla_format<int8_t>() + int8_t(1);
+//           }
+//           cvt_blk_i32 =
+//               (cvt_blk.xetla_format<int8_t>() -
+//                zero_pt_blk.xetla_format<int8_t>());
+//         }
         if constexpr (
             compute_policy::quant_type == quant_mode::S4_FULLRANGE_NO_ZP) {
-          xetla_vector<int8_t, block_size_x_b* block_size_y_b> cvt_blk_i8 =
-              (cvt_blk.xetla_format<int8_t>());
-          cvt_blk_i32 = (cvt_blk_i8.xetla_format<int8_t>());
+        //   xetla_vector<int8_t, block_size_x_b* block_size_y_b> cvt_blk_i8 =
+        //       (cvt_blk.xetla_format<int8_t>());
+          cvt_blk_i32 = (cvt_blk.xetla_format<int8_t>() - int8_t(8));
         }
+
+        // cvt_blk_i32 = 1;
 
         xetla_vector<dtype_mma_b, matB_acc_t::block_elems * vnni_rows> temp_blk;
         temp_blk.xetla_select<matB_acc_t::block_elems, vnni_rows>(0) =
@@ -655,7 +660,7 @@ class gemm_t<
     int32_t tile_offset_m = sg_idy * sg_tile_m;
 
     args.matA_base_desc.update_coord_y(tile_offset_m);
-    args.matB_base_desc.update_coord_x(tile_offset_n / pack_ratio);
+    args.matB_base_desc.update_coord_x(tile_offset_n);
     args.scale_base_desc.update_coord_x(tile_offset_n);
     args.zero_pt_base_desc.update_coord_x(tile_offset_n / pack_ratio);
   }

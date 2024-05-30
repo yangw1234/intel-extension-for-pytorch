@@ -607,14 +607,18 @@ class gemm_universal_t<
         : (start_m + wg_tile_m);
     uint32_t boundary_k = wg_tile_k;
     if constexpr (num_global_kslicing > 1) {
-      wg_tile_k = (wg_tile_k + num_global_kslicing - 1) / num_global_kslicing;
+      wg_tile_k = ((wg_tile_k + dequant_s - 1) / dequant_s
+              + num_global_kslicing - 1) / num_global_kslicing
+              * dequant_s;
       start_k =
           start_k + group_swizzle.template get_tile_idx<0>(item) * wg_tile_k;
       boundary_k = (start_k + wg_tile_k) > boundary_k ? boundary_k
                                                       : (start_k + wg_tile_k);
     }
     if constexpr (num_local_kslicing > 1) {
-      wg_tile_k = (wg_tile_k + num_local_kslicing - 1) / num_local_kslicing;
+      wg_tile_k = ((wg_tile_k + dequant_s - 1) / dequant_s
+              + num_local_kslicing - 1) / num_local_kslicing
+              * dequant_s;
       start_k = start_k + wg_id * wg_tile_k;
       boundary_k = (start_k + wg_tile_k) > boundary_k ? boundary_k
                                                       : (start_k + wg_tile_k);
@@ -650,8 +654,8 @@ class gemm_universal_t<
         {start_k, start_m});
     mem_desc_b.init(
         args.matB_base,
-        {boundary_n / pack_ratio, boundary_k, args.matB_ld / pack_ratio},
-        {int(start_n / pack_ratio), start_k});
+        {boundary_n, boundary_k / pack_ratio, args.matB_ld},
+        {int(start_n), int(start_k / pack_ratio)});
 
     uint32_t scale_size_y = ((args.matrix_k + dequant_s - 1) / dequant_s);
     mem_desc_scale_t mem_desc_scale(
@@ -685,9 +689,28 @@ class gemm_universal_t<
     gemm_t gemm;
     gemm(g, matAcc, gemm_args, gemm_slm_base, gemm_nbarr_base);
 
+    // matAcc.reg = 0;
+
     kslicing_t kslicing(wg_id);
     mat_slice_t mat_slice;
     kslicing(g, mat_slice, matAcc, kslicing_slm_base, kslicing_nbarr_base);
+
+    // mat_slice.reg = 0;
+
+    // int32_t coop_offset_n = kslicing.coop_id_x * mat_slice_t::tile_size_x;
+    // int32_t coop_offset_m = kslicing.coop_id_y * mat_slice_t::tile_size_y;
+    // if constexpr (mem_desc_c_t::is_local) {
+    //     mem_desc_c.init(args.matC_base,
+    //             {real_wg_tile_n, real_wg_tile_m, real_wg_tile_n},
+    //             {coop_offset_n, coop_offset_m});
+    // } else {
+    //     mem_desc_c.init(args.matC_base,
+    //             {boundary_n, boundary_m, args.matC_ld},
+    //             {start_n + coop_offset_n, start_m + coop_offset_m});
+    // }
+    // epilogue_t epilogue;
+    // epilogue(g, mat_slice, mem_desc_c, args.epilogue_args,
+    //         epilogue_slm_base, epilogue_nbarr_base);
 
     if (kslicing.is_valid_post_process_wg()) {
       // setup for matC
